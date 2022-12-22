@@ -1,0 +1,260 @@
+---
+title: "MLS Group Stage simulation"
+output: html_document
+date: "2022-12-21"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+```
+
+## Cross conference group stage vs divided conference group stage comparison
+
+Steps:
++ randomly assign each team a quality score, drawn from uniform distribution
++ have teams in each conference play round robin where chance of victory is proportional to quality ratio
++ select top 8 teams in each conference, divide 4 levels of seeds
++ perform two draws:
+  + one cross conference
+  + one where conferences are drawn into groups separately
++ measure average quality of opponents in each scenario, record seed and average opponent quality for both draw types
++ repeat above 1000 times (see part 2)
+
+## Part 1: single run example
+### assign team qualities, run regular season
+```{r team_quality_matches}
+# assign quality scores to each team in east and west
+east<-data.frame(teams=letters[1:18],qualities=rnorm(18,mean=100,sd=30))
+west<-data.frame(teams=letters[1:18],qualities=rnorm(18,mean=100,sd=30))
+# perform round-robin in each tournament
+round_robin<-function(conference){
+  # create a list to store match results
+  match_results<-list()
+  for(team1 in letters[1:18]){
+    for(team2 in letters[1:18]){
+      if(team1!=team2){
+        # get quality scores for each team
+        team1_quality=conference%>%
+          filter(teams==team1)%>%
+          select(qualities)%>%
+          unlist()%>%
+          as.numeric()%>%
+          max(5) # minimium win probability
+        team2_quality=conference%>%
+          filter(teams==team2)%>%
+          select(qualities)%>%
+          unlist()%>%
+          as.numeric()%>%
+          max(5) # minimum win prability weight
+        # randomly assign 3 points to team 1 or team 2
+        # result=0 means team1 wins, result=1 means team2 wins
+        game_result<-sample(c(0,1,2),1,F,c(team1_quality,
+                                           mean(team1_quality,team2_quality),
+                                           team2_quality))
+        team1_points<-0
+        team2_points<-0
+        if(game_result==0){
+          team1_points<-3
+        }else if(game_result==1){
+          team1_points<-1
+          team2_points<-1
+        }else{
+          team2_points<-3
+        }
+        match_frame=data.frame('home'=c(team1),
+                               'away'=c(team2),
+                               'home_points'<-c(team1_points),
+                               'away_points'<-c(team2_points))
+        match_results[[paste0(team1,team2)]]<-match_frame
+      }
+    }
+  }
+  result_frame<-do.call(rbind,match_results)
+  names(result_frame)<-c("home","away","home_points","away_points")
+  return(result_frame)
+}
+# function that calculates standings based on conference matches
+
+east_results<-round_robin(east)
+west_results<-round_robin(west)
+east_results
+west_results
+```
+
+### calculating standings
+```{r standings, echo=FALSE}
+standings<-function(conference,conference_results){
+  inner_join(conference_results%>%
+         group_by(home)%>%
+         summarize(home_points=sum(home_points)),
+       conference_results%>%
+         group_by(away)%>%
+         summarize(away_points=sum(away_points)),
+       by=c("home"="away"))%>%
+    mutate(points=home_points+away_points)%>%
+    arrange(desc(points))%>%
+    select("teams"=home,points)%>%
+    mutate(placement=row_number(),
+           seed_pot = case_when(placement<=2~"pot1",
+                                placement<=4~"pot2",
+                                placement<=6~"pot3",
+                                placement<=8~"pot4"))%>%
+    left_join(conference,by="teams")
+}
+east_standings<-standings(east,east_results)%>%
+  mutate(conf_team=paste0('East_',teams))
+west_standings<-standings(west,west_results)%>%
+  mutate(conf_team=paste0('West_',teams))
+east_standings
+west_standings
+bind_rows(east_standings%>%
+            mutate(conference='East'),
+          west_standings%>%
+            mutate(conference='West'))%>%
+  ggplot(aes(x=qualities,y=placement,color=conference))+
+  geom_point()+
+  labs(x="team quality",y="table place",color="conference",
+       title="Team Quality vs League Table Place")+
+  theme(legend.position='bottom')
+```
+
+### Perform group draws
+```{r perform_draws}
+# draw 1 - separate conferences
+divided_draw<-function(standings){
+  standings%>%
+  # eliminate seeded teams
+  filter(!is.na(seed_pot))%>%
+  # randomize order within pots, first in pot = Group A
+  mutate(draw=runif(nrow(.)))%>%
+  arrange(seed_pot,draw)%>%
+  mutate(group=case_when(row_number()%%2==1~'groupA',TRUE~'groupB'))
+}
+east_draw<-divided_draw(east_standings)
+west_draw<-divided_draw(west_standings)
+# draw2 - east and west combined
+combined_draw<-function(east_standings,west_standings){
+  bind_rows(east_standings,west_standings)%>%
+  # eliminate seeded teams
+  filter(!is.na(seed_pot))%>%
+  # randomize order within pots, first in pot = Group A
+  mutate(draw=runif(nrow(.)))%>%
+  arrange(seed_pot,draw)%>%
+  mutate(group=case_when(row_number()%%4==1~'groupA',
+                         row_number()%%4==2~'groupB',
+                         row_number()%%4==3~'groupC',
+                         T~'groupD'))
+}
+east_west_draw<-combined_draw(east_standings,west_standings)
+east_draw
+west_draw
+east_west_draw
+```
+### measure opponent quality in group for each team
+```{r opponent_qual}
+# function to find opponent quality per seed for given draw
+find_opponent_qual<-function(draw){
+  group_qual<-draw%>%
+    group_by(group)%>%
+    summarize(group_quality=sum(qualities))%>%
+    ungroup()
+  opponent_qual<-draw%>%
+    left_join(group_qual,by="group")%>%
+    # total quality of teams in group minus given team's quality
+    mutate(opponent_qual=group_quality-qualities)%>%
+    select(placement,conf_team,group_quality,qualities,opponent_qual)
+  return(opponent_qual)
+}
+east_qual<-find_opponent_qual(east_draw)
+west_qual<-find_opponent_qual(west_draw)
+combined_qual<-find_opponent_qual(east_west_draw)
+
+opponent_quals<-bind_rows(
+  east_qual%>%
+    mutate(draw_type='separate'),
+  west_qual%>%
+    mutate(draw_type='separate'),
+  combined_qual%>%
+    mutate(draw_type='combined')
+)
+opponent_quals%>%
+  ggplot(aes(x=placement,y=opponent_qual,color=draw_type))+
+  geom_point(position = position_jitter(w = 0.05, h = 0))+
+  geom_smooth(method='lm')+
+  theme(legend.position="bottom")+
+  labs(y='sum of group stage opponents quality scores',
+       x='conference finish place',
+       title='single simulation run')
+```
+
+## Part 2: results of 100 runs
+
+```{r monte_carlo, cache=TRUE}
+n_sim=100
+sim_results<-list()
+league_standings<-list()
+for(sim in 1:n_sim){
+  # assign quality scores to each team in east and west
+  east<-data.frame(teams=letters[1:18],qualities=rnorm(18,mean=100,sd=30))
+  west<-data.frame(teams=letters[1:18],qualities=rnorm(18,mean=100,sd=30))
+  # run round-robin regular season
+  east_results<-round_robin(east)
+  west_results<-round_robin(west)
+  # calculate standings
+  east_standings<-standings(east,east_results)%>%
+    mutate(conf_team=paste0('East_',teams))
+  west_standings<-standings(west,west_results)%>%
+    mutate(conf_team=paste0('West_',teams))
+  # append east and west standings to league_standings so we can verify quality correlates with placement
+  league_standings[[paste0(sim)]]<-bind_rows(east_standings%>%
+            mutate(conference='East'),
+          west_standings%>%
+            mutate(conference='West'))
+  # perform draws
+  east_draw<-divided_draw(east_standings)
+  west_draw<-divided_draw(west_standings)
+  east_west_draw<-combined_draw(east_standings,west_standings)
+  # calculate opponent qualities
+  east_qual<-find_opponent_qual(east_draw)
+west_qual<-find_opponent_qual(west_draw)
+combined_qual<-find_opponent_qual(east_west_draw)
+opponent_quals<-bind_rows(
+  east_qual%>%
+    mutate(draw_type='separate'),
+  west_qual%>%
+    mutate(draw_type='separate'),
+  combined_qual%>%
+    mutate(draw_type='combined')
+)
+  # store results
+  sim_results[[paste0(sim)]]<-opponent_quals
+}
+```
+
+```{r plot_monte}
+sim_results%>%
+  bind_rows()%>%
+  mutate(seed=case_when(placement<=2~1,
+                        placement<=4~2,
+                        placement<=6~3,
+                        placement<=8~4))%>%
+  ggplot(aes(x=placement,y=opponent_qual,color=draw_type))+
+  geom_point(position = position_jitter(w = 0.2, h = 0),alpha=.3)+
+  geom_smooth(method='lm')+
+  theme(legend.position="bottom")+
+  labs(y='sum of group stage opponents quality scores',
+       x='conference finish place',
+       title=paste0(n_sim,' trial simulation results'))
+league_standings%>%
+  bind_rows()%>%
+  ggplot(aes(x=qualities,y=placement,color=conference))+
+  geom_point()+
+  labs(x="team quality",y="table place",color="conference",
+       title="Team Quality vs League Table Place")+
+  theme(legend.position='bottom')+
+  scale_color_discrete(palette('dark2'))
+  
+```
