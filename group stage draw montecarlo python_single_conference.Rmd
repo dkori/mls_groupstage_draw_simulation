@@ -17,6 +17,7 @@ use_python('/usr/bin/python3')
 ## Cross conference group stage vs divided conference group stage comparison
 
 Steps:
+
 + randomly assign each team a quality score, drawn from uniform distribution
 + have teams in each conference play round robin where chance of victory is proportional to quality ratio
 + select top 8 teams in each conference, divide 4 levels of seeds
@@ -32,6 +33,7 @@ Steps:
 ## Part 1: single run example
 ### standard matchup weighting
 Match result probabilities directly proportional to quality
+
 + weight of home/away win is home/away team's quality score
 + weight of draw is mean of home/away team weight * a random value between 0 and 1
 + probabilites are each results weight divided by sum of weights
@@ -251,6 +253,7 @@ with_top%>%
 
 ### cubed matchup weighting
 Match result probabilities directly proportional to quality
+
 + weight of home/away win is home/away team's quality score cubed
 + weight of draw is mean of home/away team weight * a random value between 0 and 1
 + probabilites are each results weight divided by sum of weights
@@ -353,6 +356,7 @@ with_top%>%
 
 ### exponential matchup weighting
 Match result probabilities directly proportional to quality
+
 + weight of home/away win is *e* raised to the home/away team's quality score
 + weight of draw is mean of home/away team weight * a random value between 0 and 1
 + probabilites are each results weight divided by sum of weights
